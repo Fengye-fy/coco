@@ -4,6 +4,10 @@
 
 Electron + React + TypeScript，Windows 10/11。给使用者看的完整说明（含 WSA 安装）见 [coco使用说明.md](coco使用说明.md)。
 
+项目作者：Fengye-fy。AI 协作作者：Claude、GPT（OpenAI）。
+
+Windows 安装版和免安装便携版可在本仓库的 Releases 中下载。
+
 ## 启动
 
 需要 Node.js 22.12+（推荐 24 LTS）。

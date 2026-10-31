@@ -6,6 +6,9 @@
   "description": "coco: a visual agent that works inside its own workspace of web pages, desktop apps and WSA apps",
   "main": "electron/main.cjs",
   "author": "coco",
+  "contributors": [
+    { "name": "GPT (OpenAI)", "role": "AI 协作作者" }
+  ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build",
