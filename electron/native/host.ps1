@@ -68,7 +68,9 @@ public static class CocoNative {
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr handle, int command);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] static extern int SetWindowRgn(IntPtr handle, IntPtr region, bool redraw);
+    [DllImport("user32.dll")] static extern int GetWindowRgn(IntPtr handle, IntPtr region);
     [DllImport("gdi32.dll")] static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+    [DllImport("gdi32.dll")] static extern int GetRgnBox(IntPtr region, out RECT rect);
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr value);
     [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr handle, IntPtr dc, uint flags);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr handle, int attribute, out int value, int size);
@@ -141,7 +143,14 @@ public static class CocoNative {
         return list;
     }
 
-    // Borderless, owned by coco: the window follows coco's z-order, minimizes with it, and leaves the taskbar.
+    // WSA draws a custom title bar with its own non-client hit testing. Removing its
+    // frame moves the Android pixels but leaves invisible caption hit targets on top.
+    // Keep that frame so rendered pixels and Windows input agree.
+    static bool PreserveFrame(IntPtr handle) {
+        return String.Equals(ProcessName(Pid(handle)), "WsaClient", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Owned by coco: follows its z-order and minimizes with it. Ordinary apps are borderless.
     public static void Attach(long id, long owner) {
         IntPtr handle = Handle(id);
         if (!managed.ContainsKey(id)) {
@@ -151,8 +160,10 @@ public static class CocoNative {
             managed[id] = saved;
         }
         if (IsIconic(handle) || IsZoomed(handle)) ShowWindow(handle, 9);
-        SetWindowLongPtr(handle, GWL_STYLE, new IntPtr(GetWindowLongPtr(handle, GWL_STYLE).ToInt64() & ~WS_FRAME));
-        SetWindowLongPtr(handle, GWL_EXSTYLE, new IntPtr(GetWindowLongPtr(handle, GWL_EXSTYLE).ToInt64() & ~WS_EX_FRAME));
+        if (!PreserveFrame(handle)) {
+            SetWindowLongPtr(handle, GWL_STYLE, new IntPtr(GetWindowLongPtr(handle, GWL_STYLE).ToInt64() & ~WS_FRAME));
+            SetWindowLongPtr(handle, GWL_EXSTYLE, new IntPtr(GetWindowLongPtr(handle, GWL_EXSTYLE).ToInt64() & ~WS_EX_FRAME));
+        }
         SetWindowLongPtr(handle, GWLP_HWNDPARENT, new IntPtr(owner));
         SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         ShowWindow(handle, 0);
@@ -221,11 +232,24 @@ public static class CocoNative {
     // The part of the window the user can see inside its tile; all coordinates the agent uses are relative to it.
     static RECT Area(IntPtr handle) {
         RECT r; GetWindowRect(handle, out r);
-        Managed m;
-        if (managed.TryGetValue(handle.ToInt64(), out m) && m.clipped) {
-            r.Right = Math.Min(r.Right, r.Left + m.tw);
-            r.Bottom = Math.Min(r.Bottom, r.Top + m.th);
-        }
+        // Layout and input run in separate processes; the managed dictionary is not shared.
+        // Read the region actually applied by Windows, including a nonzero crop origin.
+        IntPtr region = CreateRectRgn(0, 0, 0, 0);
+        if (region == IntPtr.Zero) throw new Exception("无法读取窗口裁剪区域。");
+        try {
+            int kind = GetWindowRgn(handle, region);
+            if (kind == 1) throw new Exception("窗口没有可见区域。");
+            if (kind > 1) {
+                RECT clip;
+                if (GetRgnBox(region, out clip) <= 1) throw new Exception("窗口裁剪区域无效。");
+                int left = r.Left, top = r.Top;
+                r.Left = Math.Max(r.Left, left + clip.Left);
+                r.Top = Math.Max(r.Top, top + clip.Top);
+                r.Right = Math.Min(r.Right, left + clip.Right);
+                r.Bottom = Math.Min(r.Bottom, top + clip.Bottom);
+            }
+        } finally { DeleteObject(region); }
+        if (r.Right <= r.Left || r.Bottom <= r.Top) throw new Exception("窗口没有可见区域。");
         return r;
     }
 
@@ -308,7 +332,8 @@ public static class CocoNative {
 
     static bool Foreground(IntPtr handle) {
         IntPtr fg = GetForegroundWindow();
-        return fg == handle || GetAncestor(fg, 3) == handle || (fg != IntPtr.Zero && Pid(fg) == Pid(handle));
+        // WSA and multi-window apps can share a process. A sibling HWND is not this tile.
+        return fg == handle || (fg != IntPtr.Zero && GetAncestor(fg, 2) == handle);
     }
 
     static void RequireFocus(long id) {
@@ -318,17 +343,28 @@ public static class CocoNative {
     }
 
     public static void Click(long id, double nx, double ny, string button, int count) {
-        POINT p = Point(Handle(id), nx, ny);
+        IntPtr handle = Handle(id);
+        Point(handle, nx, ny); // Validate before activating or moving anything.
+        RequireFocus(id); // Otherwise WM_MOUSEACTIVATE can consume the first click.
+        POINT p = Point(handle, nx, ny);
         uint down = button == "right" ? 0x0008u : 0x0002u, up = button == "right" ? 0x0010u : 0x0004u;
         SetCursorPos(p.X, p.Y);
         Thread.Sleep(30);
-        for (int i = 0; i < Math.Max(1, count); i++) { mouse_event(down, 0, 0, 0, UIntPtr.Zero); mouse_event(up, 0, 0, 0, UIntPtr.Zero); if (count > 1) Thread.Sleep(70); }
+        for (int i = 0; i < Math.Max(1, count); i++) {
+            Point(handle, nx, ny);
+            mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+            // WSA/remote renderers need DOWN and UP to survive separate input frames.
+            try { Thread.Sleep(80); } finally { mouse_event(up, 0, 0, 0, UIntPtr.Zero); }
+            if (count > 1) Thread.Sleep(70);
+        }
     }
 
     public static void Move(long id, double nx, double ny) { POINT p = Point(Handle(id), nx, ny); SetCursorPos(p.X, p.Y); }
 
     public static void Drag(long id, double x1, double y1, double x2, double y2) {
         IntPtr handle = Handle(id);
+        Point(handle, x1, y1); Point(handle, x2, y2);
+        RequireFocus(id);
         POINT a = Point(handle, x1, y1), b = Point(handle, x2, y2);
         SetCursorPos(a.X, a.Y);
         Thread.Sleep(40);

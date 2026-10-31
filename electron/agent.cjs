@@ -33,6 +33,8 @@ Your world is only the tiles of this workspace: embedded web pages, desktop apps
 How to work:
 - Rely on your eyes. Use look before acting and check the screenshot returned after every act. Never claim an action worked without seeing it.
 - Coordinates are normalized 0–1000 within the tile screenshot: (0,0) top-left, (1000,1000) bottom-right. Aim at the center of the target.
+- act and web wait locally before returning one final screenshot (normally 2 seconds for clicks, keys and navigation). Set wait_after to 3–8 seconds when an action is expected to load slowly, up to 15 seconds. Avoid repeated look calls just to watch loading; use act.wait if the returned screen is still loading. Waiting itself does not send screenshots to the model.
+- Android tiles retain their native Windows title bar for reliable input. It is included in screenshots; aim at the Android content below it.
 - Open what the task needs with tiles.open_web or tiles.open_app (tiles.apps lists exact names; Android apps are marked). Reuse tiles that are already open.
 - To type, click the field first, then act.type; use act.key for ENTER, TAB, ESC and shortcuts such as CTRL+A.
 - For web tiles, web.read returns page text and numbered elements, handy for long pages and forms; still verify visually.

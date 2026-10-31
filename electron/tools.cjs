@@ -7,6 +7,7 @@ const schema = (name, description, properties, required = ['action']) => ({
   parameters: { type: 'object', properties, required, additionalProperties: false }, strict: false,
 });
 const tile = string('Tile label, e.g. "A"');
+const waitAfter = number('Optional local delay in seconds before taking the final screenshot (0.3–15). Use 3–8 for slow loading. No intermediate screenshots or model calls during the delay.');
 
 const TOOL_SCHEMAS = [
   schema('tiles', 'Manage the tiles of YOUR workspace: embedded web pages, desktop apps and Android (WSA) apps, labelled A, B, C… Nothing outside these tiles is reachable.', {
@@ -18,15 +19,17 @@ const TOOL_SCHEMAS = [
     tile,
   }),
   schema('look', 'See tiles. Without tile: a quick overview of every tile. With tile: a detailed screenshot of that tile; action coordinates are normalized 0–1000 within it.', { tile }, []),
-  schema('act', 'Operate a tile with mouse and keyboard like a person. x/y are 0–1000 relative to the tile screenshot ((0,0) top-left, (1000,1000) bottom-right). Returns a fresh screenshot of the tile after acting.', {
+  schema('act', 'Operate a tile with mouse and keyboard like a person. x/y are 0–1000 relative to the tile screenshot ((0,0) top-left, (1000,1000) bottom-right). Waits locally after acting (normally 2 seconds for clicks/keys) and returns only the final screenshot.', {
     tile, action: action(['click', 'double_click', 'right_click', 'move', 'drag', 'scroll', 'type', 'key', 'wait']),
     x: number('0–1000'), y: number('0–1000'), to_x: number('drag end 0–1000'), to_y: number('drag end 0–1000'),
     text: string('type: text to enter into the focused field'), key: string('key: key or chord, e.g. ENTER, TAB, ESC, CTRL+A, CTRL+C'),
     amount: number('scroll: wheel notches, positive scrolls down, negative up (default 3)'), seconds: number('wait: 0.5–10'),
+    wait_after: waitAfter,
   }, ['tile', 'action']),
   schema('web', 'Extra controls for web tiles: navigate, history, read the page text with numbered elements, then click_element or fill by number. Still verify visually.', {
     tile, action: action(['navigate', 'back', 'forward', 'reload', 'read', 'click_element', 'fill']),
     url: string('navigate: URL or search words'), element: number('click_element/fill: element number from read'), text: string('fill: text'),
+    wait_after: waitAfter,
   }, ['tile', 'action']),
 ];
 
@@ -59,6 +62,13 @@ function wait(ms, signal) {
   });
 }
 
+function afterDelay(args, fallback) {
+  if (args.wait_after === undefined) return fallback;
+  const seconds = Number(args.wait_after);
+  if (!Number.isFinite(seconds) || seconds < 0.3 || seconds > 15) throw new Error('截图等待时间必须在 0.3–15 秒之间。');
+  return seconds * 1000;
+}
+
 // The agent's only window onto the computer: every call goes through the workspace it belongs to.
 class WorkspaceTools {
   constructor(manager, workspaceId) { this.manager = manager; this.workspaceId = workspaceId; }
@@ -73,6 +83,7 @@ class WorkspaceTools {
     return { text: `${shot.tile.label} (${shot.tile.kind}) "${shot.tile.title}" ${shot.width}×${shot.height}`, image: { dataUrl: shot.dataUrl, detail } };
   }
   async execute(name, args, signal) {
+    if (signal?.aborted) throw new Error('任务已停止。');
     const m = this.manager, id = this.workspaceId;
     switch (name) {
       case 'tiles': {
@@ -100,16 +111,18 @@ class WorkspaceTools {
       }
       case 'act': {
         if (!args.tile) throw new Error('请指定拼贴。');
+        const delay = afterDelay(args, ['click', 'double_click', 'right_click', 'key'].includes(args.action) ? 2000 : 800);
         if (args.action === 'wait') await wait(Math.max(0.5, Math.min(10, Number(args.seconds) || 1)) * 1000, signal);
-        else { await m.input(id, args.tile, args); await wait(args.action === 'key' || args.action === 'click' ? 650 : 400, signal); }
+        else { await m.input(id, args.tile, args); await wait(delay, signal); }
         try { const shot = await this.shot(args.tile, 1400, 'high'); return { text: `Done: ${args.action} on ${args.tile}. Screenshot after the action: ${shot.text}.`, images: [shot.image] }; }
         catch (error) { return { text: `Done: ${args.action} on ${args.tile}. Screenshot unavailable: ${error.message}` }; }
       }
       case 'web': {
         if (!args.tile) throw new Error('请指定拼贴。');
+        const delay = afterDelay(args, args.action === 'fill' ? 800 : 2000);
         const result = await m.web(id, args.tile, args);
         if (args.action === 'read') return { text: JSON.stringify(result) };
-        await wait(500, signal);
+        await wait(delay, signal);
         try { const shot = await this.shot(args.tile, 1400, 'high'); return { text: `${JSON.stringify(result)}\nScreenshot: ${shot.text}.`, images: [shot.image] }; }
         catch (error) { return { text: `${JSON.stringify(result)}\nScreenshot unavailable: ${error.message}` }; }
       }
