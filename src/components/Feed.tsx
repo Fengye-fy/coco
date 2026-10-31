@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { AppWindow, CircleAlert, CircleHelp, Copy, Eye, Globe, Keyboard, LayoutGrid, MousePointer2, MoveVertical, Timer } from 'lucide-react';
+import { AppWindow, CircleAlert, CircleHelp, Copy, Eye, FileText, FolderOpen, Globe, Keyboard, LayoutGrid, MousePointer2, MoveVertical, Timer } from 'lucide-react';
 import { isLive } from '../api';
 import type { Task, TaskEvent } from '../types';
 
 function stepIcon(title: string) {
+  if (/文件夹|查找文件/.test(title)) return FolderOpen;
+  if (/文件/.test(title)) return FileText;
   if (/点击|双击|右键|拖动|移动/.test(title)) return MousePointer2;
   if (/输入|按键|填写/.test(title)) return Keyboard;
   if (/滚动/.test(title)) return MoveVertical;

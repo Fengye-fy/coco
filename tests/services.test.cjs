@@ -110,7 +110,7 @@ test('workspace tools only ever address their own workspace', async () => {
   assert.equal(acted.images.length, 1, 'every action returns a fresh screenshot');
   assert.ok(calls.every(entry => entry[1] === 'ws-mine'));
   assert.equal(tools.describe('act', { tile: 'A', action: 'click', x: 12.4, y: 99 }), 'A · 点击 (12, 99)');
-  assert.match(tools.summary(), /A: web "Example" https:\/\/example.com\nB: empty/);
+  assert.match(await tools.summary(),/A: web "Example" https:\/\/example.com\nB: empty/);
 });
 
 test('native host keeps arrays intact and reports errors per request', { skip: process.platform !== 'win32' }, async t => {

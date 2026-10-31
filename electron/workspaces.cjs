@@ -3,7 +3,9 @@ const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL, fileURLToPath } = require('node:url');
 const { NativeHost } = require('./native.cjs');
+const { WorkspaceFolder, inside, canOpen } = require('./folder.cjs');
 
 const PARTITION = 'persist:coco-web';
 const LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -57,8 +59,8 @@ function point(value, size) {
 }
 
 class WorkspaceManager {
-  constructor({ win, emit, createEngine }) {
-    Object.assign(this, { win, emit, createEngine });
+  constructor({ win, emit, createEngine, folders }) {
+    Object.assign(this, { win, emit, createEngine, folders });
     this.layoutHost = new NativeHost('layout');
     this.io = new NativeHost('io');
     this.workspaces = new Map();
@@ -113,7 +115,7 @@ class WorkspaceManager {
     const { id, label, kind, title, url, status, error, canBack, canForward, hint } = tile;
     return { id, label, kind, title, url, status, error, canBack: Boolean(canBack), canForward: Boolean(canForward), hint };
   }
-  state() { return [...this.workspaces.values()].map(ws => ({ id: ws.id, name: ws.name, tiles: [...ws.tiles.values()].map(tile => this.publicTile(tile)) })); }
+  state() { return [...this.workspaces.values()].map(ws => ({ id: ws.id, name: ws.name, folder: ws.folder?.root || null, tiles: [...ws.tiles.values()].map(tile => this.publicTile(tile)) })); }
   publish() { this.emit({ type: 'workspaces', workspaces: this.state() }); }
   hasNative() { for (const ws of this.workspaces.values()) for (const tile of ws.tiles.values()) if (tile.hwnd) return true; return false; }
   findByHwnd(hwnd) {
@@ -125,11 +127,13 @@ class WorkspaceManager {
     const used = new Set([...this.workspaces.values()].map(ws => ws.name));
     let n = 1;
     while (used.has(`coco ${n}`)) n++;
-    const ws = { id: randomUUID(), name: `coco ${n}`, tiles: new Map(), rects: new Map(), focused: null, engine: null };
+    const ws = { id: randomUUID(), name: `coco ${n}`, tiles: new Map(), rects: new Map(), focused: null, engine: null, folder: null };
     this.workspaces.set(ws.id, ws);
     ws.engine = this.createEngine(ws);
     this.addTile(ws.id);
     if (!this.activeId) this.activeId = ws.id;
+    const saved = this.folders?.get(ws.name);
+    if (saved) WorkspaceFolder.open(saved).then(folder => { if (this.workspaces.has(ws.id) && !ws.folder) { ws.folder = folder; this.publish(); } }).catch(() => {});
     return ws;
   }
   async closeWorkspace(id) {
@@ -146,8 +150,29 @@ class WorkspaceManager {
   renameWorkspace(id, name) {
     const text = String(name || '').trim().slice(0, 24);
     if (!text) throw new Error('名称不能为空。');
-    this.get(id).name = text;
+    const ws = this.get(id);
+    if (ws.folder && text !== ws.name) this.folders?.rename(ws.name, text);
+    ws.name = text;
     this.publish();
+  }
+  async setFolder(id, directory) {
+    const ws = this.get(id);
+    if (ws.engine.active()) throw new Error('coco 工作时不能更换文件夹。');
+    ws.folder = await WorkspaceFolder.open(directory);
+    await this.folders?.set(ws.name, ws.folder.root);
+    this.publish();
+    return ws.folder.root;
+  }
+  async clearFolder(id) {
+    const ws = this.get(id);
+    if (ws.engine.active()) throw new Error('coco 工作时不能更换文件夹。');
+    ws.folder = null;
+    await this.folders?.set(ws.name, null);
+    this.publish();
+  }
+  async folderFiles(id, query) {
+    const ws = this.get(id);
+    return ws.folder ? (await ws.folder.find(query, 500)).filter(file => canOpen(file.name)).slice(0, 300) : [];
   }
   activate(id) {
     this.get(id);
@@ -209,12 +234,47 @@ class WorkspaceManager {
     if (target.kind === 'web') return this.loadWeb(ws, tile, normalizeUrl(target.url));
     if (target.kind === 'app') return this.launch(ws, tile, { id: String(target.id || ''), name: String(target.name || '应用'), android: Boolean(target.android) });
     if (target.kind === 'window') return this.adoptExisting(ws, tile, String(target.hwnd || ''));
+    if (target.kind === 'file') return this.openFile(ws, tile, String(target.path || ''), target.mode);
     throw new Error('未知的打开方式。');
+  }
+
+  // ---- files from the workspace folder ----
+  async openFile(ws, tile, rel, mode) {
+    if (!ws.folder) throw new Error('这个工作区还没有绑定文件夹。');
+    const { file, kind, name } = await ws.folder.openable(rel, mode);
+    return kind === 'web' ? this.loadLocal(ws, tile, file, name) : this.launchFile(ws, tile, file, name);
+  }
+  async loadLocal(ws, tile, file, name) {
+    if (!tile.view) tile.view = this.createView(ws, tile);
+    tile.fileRoot = ws.folder.root;
+    const url = pathToFileURL(file).href;
+    Object.assign(tile, { kind: 'web', url, title: name, status: 'loading', error: '' });
+    this.publish();
+    this.schedulePlace();
+    await Promise.race([tile.view.webContents.loadURL(url).catch(() => {}), sleep(20000)]);
+    return tile;
+  }
+  async launchFile(ws, tile, file, name) {
+    Object.assign(tile, { kind: 'app', title: name, status: 'launching', error: '', launch: null });
+    this.publish();
+    try {
+      const before = new Set((await this.windows()).map(item => item.hwnd));
+      await this.io.call('openFile', { path: file });
+      tile.launch = { before, package: null };
+      const found = await this.waitWindow(tile, before, null, 30000).catch(error => {
+        throw tile.closed ? error : new Error(`没有检测到 ${name} 的新窗口。它可能在已经开着的应用里打开了（比如记事本的新标签页），可以在「窗口」里把那个窗口接进来。`);
+      });
+      await this.adopt(ws, tile, found);
+      return tile;
+    } catch (error) {
+      if (!tile.closed) { tile.status = 'error'; tile.error = error.message; this.publish(); }
+      throw error;
+    }
   }
 
   // ---- web ----
   createView(ws, tile) {
-    const view = new WebContentsView({ webPreferences: { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, spellcheck: false } });
+    const view = new WebContentsView({ webPreferences: { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, spellcheck: false, plugins: true } });
     view.setBackgroundColor('#ffffffff');
     view.setVisible(false);
     this.win.contentView.addChildView(view);
@@ -227,11 +287,17 @@ class WorkspaceManager {
       tile.canForward = wc.navigationHistory.canGoForward();
       this.publish();
     };
+    // Local pages opened from the workspace folder may only link to files inside that folder.
+    const allowed = url => {
+      if (/^(https?|about|data|blob):/i.test(url)) return true;
+      if (!/^file:/i.test(url) || !tile.fileRoot) return false;
+      try { return inside(tile.fileRoot, fs.realpathSync(fileURLToPath(url))); } catch { return false; }
+    };
     wc.setWindowOpenHandler(({ url }) => {
-      if (/^https?:/i.test(url)) setImmediate(() => wc.loadURL(url).catch(() => {}));
+      if (/^(https?|file):/i.test(url) && allowed(url)) setImmediate(() => wc.loadURL(url).catch(() => {}));
       return { action: 'deny' };
     });
-    wc.on('will-navigate', (event, url) => { if (!/^(https?|about|data|blob):/i.test(url)) event.preventDefault(); });
+    wc.on('will-navigate', (event, url) => { if (!allowed(url)) event.preventDefault(); });
     wc.on('did-start-loading', () => { tile.status = 'loading'; tile.error = ''; this.publish(); this.schedulePlace(); });
     wc.on('did-stop-loading', () => { if (tile.status === 'loading') tile.status = 'ready'; sync(); });
     wc.on('did-navigate', sync);
@@ -468,6 +534,15 @@ class WorkspaceManager {
     await this.waitFor(() => ws.rects.has(tile.id));
     return this.launch(ws, tile, entry);
   }
+  async agentOpenFile(wsId, rel, mode) {
+    const ws = this.get(wsId);
+    if (!ws.folder) throw new Error('这个工作区没有绑定文件夹。');
+    await ws.folder.openable(rel, mode);
+    const tile = this.emptyTile(ws) || this.addTile(wsId);
+    await this.waitFor(() => ws.rects.has(tile.id));
+    return this.openFile(ws, tile, rel, mode);
+  }
+  folderOf(wsId) { return this.get(wsId).folder; }
   async agentClose(wsId, label) { const ws = this.get(wsId); await this.closeTile(wsId, this.tileByLabel(ws, label).id); }
   async capture(wsId, label, max = 1400) {
     const ws = this.get(wsId);

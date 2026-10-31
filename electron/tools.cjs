@@ -33,9 +33,20 @@ const TOOL_SCHEMAS = [
   }, ['tile', 'action']),
 ];
 
+// Offered only while the workspace has a folder bound to it.
+const FOLDER_SCHEMA = schema('folder', 'The workspace folder the user bound to this workspace: material for the task. Paths are relative to its root ("." is the root); nothing outside it is reachable. Existing files are read-only; you may create new files and edit the ones you created.', {
+  action: action(['list', 'find', 'read', 'open', 'write']),
+  path: string('list/read/open/write: relative path, e.g. "notes/todo.md"'),
+  query: string('find: part of a file name or path'),
+  offset: number('read: character offset to continue a long file (use "next" from the previous read)'),
+  mode: action(['auto', 'web', 'app']),
+  content: string('write: UTF-8 text of the new file'),
+});
+
 const short = (text, size = 28) => { const value = String(text ?? ''); return value.length > size ? `${value.slice(0, size)}…` : value; };
 const ACT_NAMES = { click: '点击', double_click: '双击', right_click: '右键', move: '移动到', drag: '拖动', scroll: '滚动', type: '输入', key: '按键', wait: '等待' };
 const WEB_NAMES = { navigate: '前往', back: '后退', forward: '前进', reload: '刷新', read: '读取页面', click_element: '点击元素', fill: '填写元素' };
+const FOLDER_NAMES = { list: '列出文件夹', find: '查找文件', read: '读取文件', open: '打开文件', write: '新建文件' };
 
 function describe(name, args) {
   if (name === 'tiles') return { list: '查看拼贴', apps: `查找应用${args.query ? ` · ${short(args.query)}` : ''}`, open_web: `打开网页 · ${short(args.url, 40)}`, open_app: `打开${args.android ? '安卓' : ''}应用 · ${short(args.app)}`, close: `关闭拼贴 ${args.tile}` }[args.action] || '拼贴';
@@ -49,6 +60,7 @@ function describe(name, args) {
     return `${args.tile} · ${verb}${Number.isFinite(args.x) ? ` (${Math.round(args.x)}, ${Math.round(args.y)})` : ''}`;
   }
   if (name === 'web') return `${args.tile} · ${WEB_NAMES[args.action] || args.action}${args.url ? ` ${short(args.url, 36)}` : Number.isFinite(args.element) ? ` #${args.element}` : ''}`;
+  if (name === 'folder') return `${FOLDER_NAMES[args.action] || '文件夹'}${args.action === 'find' ? ` · ${short(args.query)}` : args.path ? ` · ${short(args.path, 36)}` : ''}`;
   if (name === 'request_user_input') return '向你提问';
   return name;
 }
@@ -72,11 +84,16 @@ function afterDelay(args, fallback) {
 // The agent's only window onto the computer: every call goes through the workspace it belongs to.
 class WorkspaceTools {
   constructor(manager, workspaceId) { this.manager = manager; this.workspaceId = workspaceId; }
-  schemas() { return TOOL_SCHEMAS; }
+  folder() { return this.manager.folderOf?.(this.workspaceId) || null; }
+  schemas() { return this.folder() ? [...TOOL_SCHEMAS, FOLDER_SCHEMA] : TOOL_SCHEMAS; }
   describe(name, args) { return describe(name, args); }
-  summary() {
+  async summary() {
     const tiles = this.manager.describe(this.workspaceId);
-    return tiles.length ? tiles.map(t => `${t.tile}: ${t.kind}${t.kind === 'empty' ? '' : ` "${t.title}"`}${t.url ? ` ${t.url}` : ''}${t.status === 'ready' || t.status === 'idle' ? '' : ` (${t.status})`}`).join('\n') : '(no tiles)';
+    const lines = tiles.length ? tiles.map(t => `${t.tile}: ${t.kind}${t.kind === 'empty' ? '' : ` "${t.title}"`}${t.url ? ` ${t.url}` : ''}${t.status === 'ready' || t.status === 'idle' ? '' : ` (${t.status})`}`).join('\n') : '(no tiles)';
+    const folder = this.folder();
+    if (!folder) return lines;
+    const files = await folder.summary().catch(error => `unavailable: ${error.message}`);
+    return `${lines}\n\n[Workspace folder]\n${files}`;
   }
   async shot(label, max, detail) {
     const shot = await this.manager.capture(this.workspaceId, label, max);
@@ -125,6 +142,16 @@ class WorkspaceTools {
         await wait(delay, signal);
         try { const shot = await this.shot(args.tile, 1400, 'high'); return { text: `${JSON.stringify(result)}\nScreenshot: ${shot.text}.`, images: [shot.image] }; }
         catch (error) { return { text: `${JSON.stringify(result)}\nScreenshot unavailable: ${error.message}` }; }
+      }
+      case 'folder': {
+        const folder = this.folder();
+        if (!folder) throw new Error('这个工作区没有绑定文件夹。');
+        if (args.action === 'list') return { text: JSON.stringify(await folder.list(args.path || '.')) };
+        if (args.action === 'find') { const found = await folder.find(args.query, 200); return { text: JSON.stringify({ count: found.length, files: found.map(file => file.path) }) }; }
+        if (args.action === 'read') return { text: JSON.stringify(await folder.read(args.path, args.offset)) };
+        if (args.action === 'write') { const written = await folder.write(args.path, args.content); return { text: `${written.created ? 'Created' : 'Updated'} ${written.path} (${written.bytes} bytes).` }; }
+        if (args.action === 'open') { const t = await m.agentOpenFile(id, args.path, args.mode); return { text: `Opened ${args.path} in ${t.kind} tile ${t.label}. Use look to see it.` }; }
+        throw new Error('未知的文件夹操作。');
       }
       default: throw new Error(`工具不可用：${name}`);
     }

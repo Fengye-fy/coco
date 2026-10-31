@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, safeStorage, dialog, nativeImage, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, dialog, nativeImage, nativeTheme, shell } = require('electron');
 const path = require('node:path');
 const { ConfigStore, validateSettings } = require('./config.cjs');
 const { HistoryStore } = require('./history.cjs');
 const { WorkspaceTools } = require('./tools.cjs');
 const { WorkspaceManager } = require('./workspaces.cjs');
+const { FolderStore } = require('./folder.cjs');
 const { AgentEngine } = require('./agent.cjs');
 const { requestResponse, responseText } = require('./provider.cjs');
 
@@ -35,8 +36,10 @@ async function bootstrap() {
   const userData = app.getPath('userData');
   config = new ConfigStore(userData, safeStorage);
   history = new HistoryStore(userData);
+  const folders = new FolderStore(userData);
   await config.load();
   await history.load();
+  await folders.load();
 
   win = new BrowserWindow({
     width: 1480, height: 940, minWidth: 1040, minHeight: 640,
@@ -46,7 +49,7 @@ async function bootstrap() {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, devTools: !app.isPackaged },
   });
   manager = new WorkspaceManager({
-    win, emit,
+    win, emit, folders,
     createEngine: ws => new AgentEngine({ config, history, tools: new WorkspaceTools(manager, ws.id), emit: event => emit({ ...event, wsId: ws.id }), thumb, workspace: ws }),
   });
   manager.createWorkspace();
@@ -82,6 +85,19 @@ async function bootstrap() {
   handle('tile:close', (wsId, tileId) => manager.closeTile(wsId, tileId));
   handle('tile:nav', (wsId, tileId, action, url) => manager.navigate(wsId, tileId, action, url));
   handle('tile:focus', (wsId, tileId) => manager.focusTile(wsId, tileId));
+  handle('folder:choose', async wsId => {
+    const ws = manager.get(wsId);
+    const result = await dialog.showOpenDialog(win, { title: `选择「${ws.name}」的工作区文件夹`, defaultPath: ws.folder?.root, properties: ['openDirectory'] });
+    return result.canceled ? null : manager.setFolder(wsId, result.filePaths[0]);
+  });
+  handle('folder:clear', wsId => manager.clearFolder(wsId));
+  handle('folder:files', (wsId, query) => manager.folderFiles(wsId, query));
+  handle('folder:reveal', async wsId => {
+    const folder = manager.folderOf(wsId);
+    if (!folder) throw new Error('这个工作区没有绑定文件夹。');
+    const error = await shell.openPath(folder.root);
+    if (error) throw new Error(error);
+  });
   handle('apps:list', async refresh => (await manager.apps(Boolean(refresh))).apps);
   handle('windows:list', () => manager.desktopWindows());
 

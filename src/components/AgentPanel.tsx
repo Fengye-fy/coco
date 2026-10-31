@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, LoaderCircle, Pause, Play, Square, SquarePen } from 'lucide-react';
+import { ArrowUp, FolderOpen, FolderPlus, LoaderCircle, Pause, Play, Square, SquarePen, X } from 'lucide-react';
 import { api, isLive, statusText, unwrap } from '../api';
 import type { Settings, Task, WorkspaceState } from '../types';
 import { TaskView } from './Feed';
 
 const IDEAS = ['打开 bing.com，搜索今天的科技新闻，挑三条告诉我', '打开记事本，写下今天的三件待办', '打开安卓版微信，看看有没有未读消息'];
+const FOLDER_IDEAS = ['看看文件夹里有什么，按里面的说明一步步操作', '把文件夹里的文档打开放进拼贴，告诉我写了什么', '把 A 里看到的要点整理成一个新文件，存进文件夹'];
+const baseName = (folder: string) => folder.split(/[\\/]/).filter(Boolean).pop() || folder;
 const drafts = new Map<string, string>();
 
 interface Props { ws: WorkspaceState; tasks: Task[]; settings: Settings; onSettings(): void; notify(message: string, error?: boolean): void }
@@ -49,17 +51,32 @@ export function AgentPanel({ ws, tasks, settings, onSettings, notify }: Props) {
     setBusy(false);
   }
 
+  const chooseFolder = () => run(async () => { const root = await unwrap(api().chooseFolder(ws.id)); if (root) notify(`已绑定 ${baseName(root)}`); });
+
   return <section className="agent" aria-label={`${ws.name} 的 agent`}>
     <header className="panel-head">
       <div className="panel-title"><strong>{ws.name}</strong>{task && <span className={`state ${task.status}`}>{statusText[task.status]}</span>}</div>
       {tasks.length > 0 && !live && <button className="icon-btn" title="新对话" aria-label="新对话" onClick={() => run(() => unwrap(api().reset(ws.id)))}><SquarePen size={16} /></button>}
     </header>
+    {ws.folder
+      ? <div className="folder-bar">
+          <FolderOpen size={14} />
+          <button className="folder-name" title={`${ws.folder}\n点击在资源管理器中打开`} onClick={() => run(() => unwrap(api().revealFolder(ws.id)))}>{baseName(ws.folder)}</button>
+          <span className="grow" />
+          <button className="folder-action" disabled={live} onClick={chooseFolder}>更换</button>
+          <button className="icon-btn small" title="解除绑定" aria-label="解除绑定文件夹" disabled={live} onClick={() => run(() => unwrap(api().clearFolder(ws.id)))}><X size={13} /></button>
+        </div>
+      : <button className="folder-bar empty" disabled={live} onClick={chooseFolder}>
+          <FolderPlus size={14} /><span>绑定本地文件夹</span><small>coco 会按里面的内容操作窗口</small>
+        </button>}
     <div className="feed" ref={feedRef} onScroll={() => { const el = feedRef.current; if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
       {tasks.length ? tasks.map(item => <TaskView key={item.id} task={item} onCopy={async value => { try { await navigator.clipboard.writeText(value); notify('已复制'); } catch { notify('复制失败', true); } }} />) : <div className="welcome">
         <span className="mark lg" />
         <h2>在右边的工作区里，我替你动手。</h2>
-        <p>打开网页、桌面应用或安卓应用，然后告诉我要做什么。我只看得到、也只会操作这个工作区里的拼贴。</p>
-        <div className="ideas">{IDEAS.map(idea => <button key={idea} onClick={() => { setText(idea); inputRef.current?.focus(); }}>{idea}</button>)}</div>
+        <p>{ws.folder
+          ? <>我会先读「{baseName(ws.folder)}」里的文件，再按内容操作右边的拼贴。文件夹外的东西我碰不到，里面已有的文件我只读不改。</>
+          : '打开网页、桌面应用或安卓应用，然后告诉我要做什么。我只看得到、也只会操作这个工作区里的拼贴。'}</p>
+        <div className="ideas">{(ws.folder ? FOLDER_IDEAS : IDEAS).map(idea => <button key={idea} onClick={() => { setText(idea); inputRef.current?.focus(); }}>{idea}</button>)}</div>
       </div>}
     </div>
     <div className="composer">

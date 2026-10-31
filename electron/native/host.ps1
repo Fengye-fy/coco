@@ -474,6 +474,8 @@ function Invoke-Request($request) {
             else { [CocoNative]::Launch((Join-Path $env:WINDIR 'explorer.exe'), 'shell:AppsFolder\' + [string]$request.app) }
             return $true
         }
+        # Explorer hands a document to its default app; callers only pass document and media types.
+        'openFile' { [CocoNative]::Launch((Join-Path $env:WINDIR 'explorer.exe'), '"' + [string]$request.path + '"'); return $true }
         'apps' {
             # WSA registers each Android app as a Start menu shortcut to WsaClient.exe /launch wsa://<package>.
             $android = @{}; $client = ''

@@ -10,7 +10,9 @@ export const HEADER = 36;
 export const bodyRect = (box: Rect): Rect => ({ x: box.x + 1, y: box.y + HEADER, width: box.width - 2, height: box.height - HEADER - 1 });
 
 const KIND_ICON = { web: Globe, app: AppWindow, android: Smartphone, empty: Plus };
-const pretty = (url: string) => url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+const pretty = (url: string) => /^file:/i.test(url)
+  ? decodeURIComponent(url.replace(/^file:\/+/i, '')).replace(/\//g, '\\')
+  : url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
 
 interface Props {
   ws: WorkspaceState;
@@ -66,7 +68,7 @@ export function TileArea({ ws, layout, size, focused, zoomed, containerRef, onFo
     {ws.tiles.map(tile => {
       const box = zoomedTile ? (tile.id === zoomedTile ? { x: 0, y: 0, width: size.width, height: size.height } : null) : boxes.get(tile.id);
       if (!box) return null;
-      return <TileFrame key={tile.id} tile={tile} box={box} focused={tile.id === focused} zoomed={tile.id === zoomedTile}
+      return <TileFrame key={tile.id} wsId={ws.id} folder={ws.folder} tile={tile} box={box} focused={tile.id === focused} zoomed={tile.id === zoomedTile}
         onFocus={() => onFocus(tile.id)} onAdd={dir => onAdd(tile.id, dir)} onClose={() => onClose(tile.id)}
         onZoom={() => onZoom(tile.id === zoomedTile ? null : tile.id)} onOpen={target => onOpen(tile.id, target)}
         onNav={(action, url) => onNav(tile.id, action, url)} />;
@@ -78,12 +80,12 @@ export function TileArea({ ws, layout, size, focused, zoomed, containerRef, onFo
 }
 
 interface FrameProps {
-  tile: TileState; box: Rect; focused: boolean; zoomed: boolean;
+  wsId: string; folder: string | null; tile: TileState; box: Rect; focused: boolean; zoomed: boolean;
   onFocus(): void; onAdd(dir: SplitDir): void; onClose(): void; onZoom(): void;
   onOpen(target: OpenTarget): Promise<void>; onNav(action: 'back' | 'forward' | 'reload' | 'url', url?: string): void;
 }
 
-function TileFrame({ tile, box, focused, zoomed, onFocus, onAdd, onClose, onZoom, onOpen, onNav }: FrameProps) {
+function TileFrame({ wsId, folder, tile, box, focused, zoomed, onFocus, onAdd, onClose, onZoom, onOpen, onNav }: FrameProps) {
   const Icon = KIND_ICON[tile.kind];
   const web = tile.kind === 'web';
   const launcher = tile.kind === 'empty' || (tile.kind !== 'web' && tile.status === 'error');
@@ -104,7 +106,7 @@ function TileFrame({ tile, box, focused, zoomed, onFocus, onAdd, onClose, onZoom
       {(tile.status === 'loading' || tile.status === 'launching') && <span className="loading-bar" />}
     </header>
     <div className="tile-body">
-      {launcher ? <Launcher onOpen={onOpen} error={tile.error} />
+      {launcher ? <Launcher wsId={wsId} folder={folder} onOpen={onOpen} error={tile.error} />
         : tile.status === 'launching' ? <div className="tile-note"><LoaderCircle size={20} className="spin" /><strong>正在启动 {tile.title}</strong><span>{tile.kind === 'android' ? 'WSA 首次启动可能需要一分钟' : '窗口出现后会自动放进这里'}</span></div>
           : web && tile.status === 'error' ? <div className="tile-note"><CircleAlert size={20} /><strong>页面打不开</strong><span>{tile.error}</span><button className="ghost" onClick={() => onNav('reload')}><RotateCw size={13} />重试</button></div>
             : <div className="tile-note faint"><Icon size={20} /><span>{tile.title}</span></div>}

@@ -13,7 +13,8 @@ export interface TileState {
   canForward: boolean;
   hint?: { near?: string | null; dir: SplitDir };
 }
-export interface WorkspaceState { id: string; name: string; tiles: TileState[] }
+export interface WorkspaceState { id: string; name: string; folder: string | null; tiles: TileState[] }
+export interface FolderFile { name: string; path: string }
 export interface Settings { baseUrl: string; model: string; maxSteps: number; requestTimeout: number; hasApiKey: boolean; encryptionAvailable: boolean }
 export interface SettingsInput extends Settings { apiKey?: string; clearApiKey?: boolean }
 export type TaskStatus = 'running' | 'paused' | 'waiting_input' | 'stopping' | 'completed' | 'failed' | 'stopped' | 'limited' | 'interrupted';
@@ -37,7 +38,7 @@ export interface Task {
 export interface AppEntry { name: string; id: string; android: boolean }
 export interface DesktopWindow { hwnd: string; title: string; process: string }
 export interface Rect { x: number; y: number; width: number; height: number }
-export type OpenTarget = { kind: 'web'; url: string } | { kind: 'app'; id: string; name: string; android: boolean } | { kind: 'window'; hwnd: string };
+export type OpenTarget = { kind: 'web'; url: string } | { kind: 'app'; id: string; name: string; android: boolean } | { kind: 'window'; hwnd: string } | { kind: 'file'; path: string };
 export interface Bootstrap { settings: Settings; version: string; workspaces: WorkspaceState[]; activeId: string; sessions: Record<string, Task[]> }
 export interface ConnectionResult { message: string; latency: number; vision: boolean }
 export type CocoEvent =
@@ -63,6 +64,10 @@ export interface CocoAPI {
   closeTile(wsId: string, tileId: string): Promise<Result<void>>;
   navTile(wsId: string, tileId: string, action: 'back' | 'forward' | 'reload' | 'url', url?: string): Promise<Result<void>>;
   focusTile(wsId: string, tileId: string): Promise<Result<void>>;
+  chooseFolder(wsId: string): Promise<Result<string | null>>;
+  clearFolder(wsId: string): Promise<Result<void>>;
+  folderFiles(wsId: string, query?: string): Promise<Result<FolderFile[]>>;
+  revealFolder(wsId: string): Promise<Result<void>>;
   apps(refresh?: boolean): Promise<Result<AppEntry[]>>;
   windows(): Promise<Result<DesktopWindow[]>>;
   send(wsId: string, text: string): Promise<Result<Task>>;
