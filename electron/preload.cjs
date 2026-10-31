@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('coco', {
   apps: invoke('apps:list'),
   windows: invoke('windows:list'),
   send: invoke('agent:send'),
+  addAgent: invoke('agent:add'),
+  closeAgent: invoke('agent:close'),
   pause: invoke('agent:pause'),
   resume: invoke('agent:resume'),
   stop: invoke('agent:stop'),

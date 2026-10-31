@@ -13,21 +13,29 @@ export interface TileState {
   canForward: boolean;
   hint?: { near?: string | null; dir: SplitDir };
 }
-export interface WorkspaceState { id: string; name: string; folder: string | null; tiles: TileState[] }
+export interface AgentState { id: string; name: string; hint?: { near?: string | null; dir: SplitDir } }
+export interface WorkspaceState { id: string; name: string; folder: string | null; agents: AgentState[]; tiles: TileState[] }
 export interface FolderFile { name: string; path: string }
-export interface Settings { baseUrl: string; model: string; maxSteps: number; requestTimeout: number; hasApiKey: boolean; encryptionAvailable: boolean }
+export interface Settings { baseUrl: string; model: string; maxSteps: number; requestTimeout: number; observationInterval: number; reconnectAttempts: number; hasApiKey: boolean; encryptionAvailable: boolean }
 export interface SettingsInput extends Settings { apiKey?: string; clearApiKey?: boolean }
 export type TaskStatus = 'running' | 'paused' | 'waiting_input' | 'stopping' | 'completed' | 'failed' | 'stopped' | 'limited' | 'interrupted';
 export interface TaskEvent { id: string; at: string; kind: string; title: string; detail: string; image?: string }
+export interface PlanStep { title: string; status: 'pending' | 'in_progress' | 'completed' }
+export interface TaskActivity { kind: 'waiting' | 'reconnecting'; title: string; detail: string; until?: number; seconds?: number; attempt?: number; total?: number; exhausted?: boolean }
 export interface Task {
   id: string;
   workspaceId: string;
   workspace: string;
+  agentId?: string;
+  agentName?: string;
   prompt: string;
   status: TaskStatus;
   model: string;
   steps: number;
   toolCalls: number;
+  plan?: PlanStep[];
+  planNote?: string;
+  activity?: TaskActivity;
   createdAt: string;
   finishedAt?: string;
   question?: string;
@@ -43,7 +51,8 @@ export interface Bootstrap { settings: Settings; version: string; workspaces: Wo
 export interface ConnectionResult { message: string; latency: number; vision: boolean }
 export type CocoEvent =
   | { type: 'workspaces'; workspaces: WorkspaceState[] }
-  | { type: 'task'; wsId: string; task: Task; event?: TaskEvent }
+  | { type: 'task'; wsId: string; agentId?: string; task: Task; event?: TaskEvent }
+  | { type: 'agent-reset'; wsId: string; agentId: string }
   | { type: 'reveal'; wsId: string; tileId: string }
   | { type: 'focus'; wsId: string; tileId: string }
   | { type: 'notice'; message: string; error?: boolean };
@@ -70,12 +79,14 @@ export interface CocoAPI {
   revealFolder(wsId: string): Promise<Result<void>>;
   apps(refresh?: boolean): Promise<Result<AppEntry[]>>;
   windows(): Promise<Result<DesktopWindow[]>>;
-  send(wsId: string, text: string): Promise<Result<Task>>;
-  pause(wsId: string): Promise<Result<Task>>;
-  resume(wsId: string): Promise<Result<Task>>;
-  stop(wsId: string): Promise<Result<Task>>;
-  answer(wsId: string, text: string): Promise<Result<Task>>;
-  reset(wsId: string): Promise<Result<void>>;
+  addAgent(wsId: string, hint?: { near?: string | null; dir?: SplitDir }): Promise<Result<string>>;
+  closeAgent(wsId: string, agentId: string): Promise<Result<void>>;
+  send(wsId: string, text: string, agentId?: string): Promise<Result<Task>>;
+  pause(wsId: string, agentId?: string): Promise<Result<Task>>;
+  resume(wsId: string, agentId?: string): Promise<Result<Task>>;
+  stop(wsId: string, agentId?: string): Promise<Result<Task>>;
+  answer(wsId: string, text: string, agentId?: string): Promise<Result<Task>>;
+  reset(wsId: string, agentId?: string): Promise<Result<void>>;
   windowAction(action: 'minimize' | 'maximize' | 'close'): Promise<Result<void>>;
   onEvent(callback: (event: CocoEvent) => void): () => void;
 }

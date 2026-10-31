@@ -3,12 +3,12 @@ import { CircleAlert, CircleCheck, History, LoaderCircle, Minus, Plus, Settings2
 import { api, isLive, load, save, unwrap } from './api';
 import { compute, reconcile, resize, type Handle, type Layout } from './layout';
 import type { CocoEvent, OpenTarget, Rect, Settings, SettingsInput, SplitDir, Task, TaskEvent, WorkspaceState } from './types';
-import { AgentPanel } from './components/AgentPanel';
+import { AgentArea } from './components/AgentArea';
 import { HistoryPanel, SettingsPanel } from './components/SidePanels';
 import { bodyRect, TileArea } from './components/TileArea';
 
 type Panel = 'agent' | 'settings' | 'history';
-const SIDE_MIN = 320, SIDE_MAX = 620;
+const SIDE_MIN = 320;
 
 function mergeTask(list: Task[] = [], task: Task, event?: TaskEvent): Task[] {
   const index = list.findIndex(item => item.id === task.id);
@@ -46,7 +46,8 @@ export default function App() {
     let disposed = false;
     const unsubscribe = window.coco.onEvent((event: CocoEvent) => {
       if (event.type === 'workspaces') setWorkspaces(event.workspaces);
-      else if (event.type === 'task') setSessions(prev => ({ ...prev, [event.wsId]: mergeTask(prev[event.wsId], event.task, event.event) }));
+      else if (event.type === 'task') { const id = event.agentId || event.wsId; setSessions(prev => ({ ...prev, [id]: mergeTask(prev[id], event.task, event.event) })); }
+      else if (event.type === 'agent-reset') setSessions(prev => ({ ...prev, [event.agentId]: [] }));
       else if (event.type === 'reveal') { setActiveId(event.wsId); setZoom(prev => ({ ...prev, [event.wsId]: null })); }
       else if (event.type === 'focus') setFocus(prev => ({ ...prev, [event.wsId]: event.tileId }));
       else notify(event.message, Boolean(event.error));
@@ -114,9 +115,15 @@ export default function App() {
 
   const anyLive =Object.values(sessions).some(list => isLive(list.at(-1)));
 
+  useEffect(() => {
+    const clamp = () => setSide(prev => Math.min(Math.max(prev, SIDE_MIN), Math.max(SIDE_MIN, window.innerWidth - 520)));
+    clamp(); window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
+  }, []);
+
   async function newWorkspace() { const id = await run(() => unwrap(api().createWorkspace())); if (id) { setActiveId(id); setPanel('agent'); } }
   async function closeWorkspace(ws: WorkspaceState) {
-    const busy = ws.tiles.some(tile => tile.kind !== 'empty') || isLive(sessions[ws.id]?.at(-1));
+    const busy = ws.tiles.some(tile => tile.kind !== 'empty') || ws.agents.some(agent => isLive(sessions[agent.id]?.at(-1)));
     if (busy && !window.confirm(`关闭「${ws.name}」？其中的网页和应用会一起关闭。`)) return;
     const next = await run(() => unwrap(api().closeWorkspace(ws.id)));
     if (next) setActiveId(next);
@@ -156,7 +163,7 @@ export default function App() {
     el.setPointerCapture(event.pointerId);
     const start = event.clientX, from = side;
     let width = from;
-    const move = (e: PointerEvent) => { width = Math.min(Math.max(from + e.clientX - start, SIDE_MIN), Math.min(SIDE_MAX, window.innerWidth - 520)); setSide(width); };
+    const move = (e: PointerEvent) => { width = Math.min(Math.max(from + e.clientX - start, SIDE_MIN), Math.max(SIDE_MIN, window.innerWidth - 520)); setSide(width); };
     const end = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', end); save('side', width); };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', end);
@@ -167,10 +174,10 @@ export default function App() {
       <div className="brand"><span className="mark" />coco</div>
       <nav className="tabs" role="tablist" aria-label="工作区">
         {workspaces.map(ws => {
-          const status = sessions[ws.id]?.at(-1)?.status;
+          const status = ws.agents.map(agent => sessions[agent.id]?.at(-1)).find(task => isLive(task))?.status;
           return <div key={ws.id} role="tab" aria-selected={ws.id === activeId} className={`tab${ws.id === activeId ? ' active' : ''}`}
             onClick={() => setActiveId(ws.id)} onDoubleClick={() => setRenaming(ws.id)} title="双击重命名">
-            <span className={`dot ${status && isLive(sessions[ws.id]?.at(-1)) ? status : ''}`} />
+            <span className={`dot ${status || ''}`} />
             {renaming === ws.id
               ? <input autoFocus defaultValue={ws.name} maxLength={24} aria-label="工作区名称" onClick={e => e.stopPropagation()}
                   onBlur={e => { setRenaming(null); if (e.target.value.trim() && e.target.value !== ws.name) void run(() => unwrap(api().renameWorkspace(ws.id, e.target.value))); }}
@@ -197,7 +204,10 @@ export default function App() {
       <aside className="side" style={{ width: side }}>
         {bootError && <div className="side-msg"><CircleAlert size={16} />{bootError}</div>}
         {!settings && !bootError && <div className="side-msg"><LoaderCircle size={16} className="spin" />正在准备…</div>}
-        {settings && active && panel === 'agent' && <AgentPanel ws={active} tasks={sessions[active.id] || []} settings={settings} onSettings={() => setPanel('settings')} notify={notify} />}
+        {settings && workspaces.map(ws => <div key={ws.id} className="agent-workspace" hidden={panel !== 'agent' || ws.id !== activeId}>
+          <AgentArea ws={ws} sessions={sessions} settings={settings} visible={panel === 'agent' && ws.id === activeId} onSettings={() => setPanel('settings')} notify={notify}
+            onWiden={width => setSide(prev => { const next = Math.min(Math.max(prev, width), Math.max(SIDE_MIN, window.innerWidth - 520)); save('side', next); return next; })} />
+        </div>)}
         {settings && panel === 'settings' && <SettingsPanel settings={settings} busy={anyLive} onSave={saveSettings} onBack={() => setPanel('agent')} notify={notify} />}
         {settings && panel === 'history' && <HistoryPanel onBack={() => setPanel('agent')} notify={notify} />}
       </aside>

@@ -1,6 +1,6 @@
 {
   "name": "coco-agent",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "coco: a visual agent that works inside its own workspace of web pages, desktop apps and WSA apps",
@@ -15,6 +15,8 @@
     "test:native": "node scripts/verify-native.mjs",
     "test:native-input": "node scripts/verify-native-input.mjs",
     "test:folder": "node scripts/verify-folder.mjs",
+    "test:planning": "node scripts/verify-planning.mjs",
+    "test:agents": "node scripts/verify-agents.mjs",
     "test:dev": "node scripts/verify-dev.mjs",
     "icon": "electron scripts/make-icon.cjs",
     "dist:dir": "npm run build && electron-builder --win --dir --config.electronDist=node_modules/electron/dist --config.win.signExecutable=false",

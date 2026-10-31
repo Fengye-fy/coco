@@ -158,4 +158,4 @@ class WorkspaceTools {
   }
 }
 
-module.exports = { WorkspaceTools, TOOL_SCHEMAS, describe };
+module.exports = { WorkspaceTools, TOOL_SCHEMAS, describe, wait };

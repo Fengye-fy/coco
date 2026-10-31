@@ -115,7 +115,39 @@ class WorkspaceManager {
     const { id, label, kind, title, url, status, error, canBack, canForward, hint } = tile;
     return { id, label, kind, title, url, status, error, canBack: Boolean(canBack), canForward: Boolean(canForward), hint };
   }
-  state() { return [...this.workspaces.values()].map(ws => ({ id: ws.id, name: ws.name, folder: ws.folder?.root || null, tiles: [...ws.tiles.values()].map(tile => this.publicTile(tile)) })); }
+  state() { return [...this.workspaces.values()].map(ws => ({ id: ws.id, name: ws.name, folder: ws.folder?.root || null, agents: [...ws.agents.values()].map(({ id, name, hint }) => ({ id, name, hint })), tiles: [...ws.tiles.values()].map(tile => this.publicTile(tile)) })); }
+  agent(wsId, agentId) {
+    const ws = this.get(wsId);
+    const agent = agentId === undefined ? ws.agents.values().next().value : ws.agents.get(agentId);
+    if (!agent || agent.closing) throw new Error('Agent 分身不存在或正在关闭。');
+    return agent;
+  }
+  addAgent(wsId, hint = {}, initial = false) {
+    const ws = this.get(wsId);
+    if (ws.closing) throw new Error('工作区正在关闭。');
+    if (ws.agents.size >= 12) throw new Error('每个工作区最多 12 个 Agent 分身。');
+    if (hint.near && !ws.agents.has(hint.near)) throw new Error('拆分来源不存在。');
+    if (hint.dir && !['auto', 'right', 'down'].includes(hint.dir)) throw new Error('无效的拆分方向。');
+    let n = 1;
+    const names = new Set([...ws.agents.values()].map(agent => agent.name));
+    while (names.has(`分身 ${n}`)) n++;
+    const agent = { id: initial ? ws.id : randomUUID(), name: `分身 ${n}`, hint: { near: hint.near || null, dir: hint.dir || 'auto' }, engine: null, closing: false };
+    agent.engine = this.createEngine(ws, agent);
+    ws.agents.set(agent.id, agent);
+    ws.engine = ws.agents.values().next().value.engine;
+    if (!initial) this.publish();
+    return agent.id;
+  }
+  async closeAgent(wsId, agentId) {
+    const ws = this.get(wsId), agent = this.agent(wsId, agentId);
+    if ([...ws.agents.values()].filter(item => !item.closing).length <= 1) throw new Error('至少保留一个 Agent 分身。');
+    agent.closing = true;
+    agent.engine.stop();
+    await agent.engine.runningPromise;
+    ws.agents.delete(agent.id);
+    ws.engine = ws.agents.values().next().value.engine;
+    this.publish();
+  }
   publish() { this.emit({ type: 'workspaces', workspaces: this.state() }); }
   hasNative() { for (const ws of this.workspaces.values()) for (const tile of ws.tiles.values()) if (tile.hwnd) return true; return false; }
   findByHwnd(hwnd) {
@@ -127,9 +159,9 @@ class WorkspaceManager {
     const used = new Set([...this.workspaces.values()].map(ws => ws.name));
     let n = 1;
     while (used.has(`coco ${n}`)) n++;
-    const ws = { id: randomUUID(), name: `coco ${n}`, tiles: new Map(), rects: new Map(), focused: null, engine: null, folder: null };
+    const ws = { id: randomUUID(), name: `coco ${n}`, tiles: new Map(), rects: new Map(), focused: null, engine: null, agents: new Map(), folder: null, closing: false };
     this.workspaces.set(ws.id, ws);
-    ws.engine = this.createEngine(ws);
+    this.addAgent(ws.id, {}, true);
     this.addTile(ws.id);
     if (!this.activeId) this.activeId = ws.id;
     const saved = this.folders?.get(ws.name);
@@ -139,8 +171,9 @@ class WorkspaceManager {
   async closeWorkspace(id) {
     const ws = this.get(id);
     if (this.workspaces.size === 1) throw new Error('至少保留一个工作区。');
-    ws.engine.stop();
-    await ws.engine.runningPromise;
+    ws.closing = true;
+    for (const agent of ws.agents.values()) agent.engine.stop();
+    await Promise.allSettled([...ws.agents.values()].map(agent => agent.engine.runningPromise));
     await Promise.allSettled([...ws.tiles.keys()].map(tileId => this.closeTile(id, tileId, false)));
     this.workspaces.delete(id);
     if (this.activeId === id) this.activeId = this.workspaces.keys().next().value;
@@ -157,7 +190,7 @@ class WorkspaceManager {
   }
   async setFolder(id, directory) {
     const ws = this.get(id);
-    if (ws.engine.active()) throw new Error('coco 工作时不能更换文件夹。');
+    if ([...ws.agents.values()].some(agent => agent.engine.active())) throw new Error('coco 工作时不能更换文件夹。');
     ws.folder = await WorkspaceFolder.open(directory);
     await this.folders?.set(ws.name, ws.folder.root);
     this.publish();
@@ -165,7 +198,7 @@ class WorkspaceManager {
   }
   async clearFolder(id) {
     const ws = this.get(id);
-    if (ws.engine.active()) throw new Error('coco 工作时不能更换文件夹。');
+    if ([...ws.agents.values()].some(agent => agent.engine.active())) throw new Error('coco 工作时不能更换文件夹。');
     ws.folder = null;
     await this.folders?.set(ws.name, null);
     this.publish();

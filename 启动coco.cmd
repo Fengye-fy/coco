@@ -2,6 +2,14 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 title coco
+if exist "release\v0.5.0\win-unpacked\coco.exe" (
+  start "" "%~dp0release\v0.5.0\win-unpacked\coco.exe"
+  exit /b 0
+)
+if exist "release\v0.4.0\win-unpacked\coco.exe" (
+  start "" "%~dp0release\v0.4.0\win-unpacked\coco.exe"
+  exit /b 0
+)
 if exist "release\win-unpacked\coco.exe" (
   start "" "%~dp0release\win-unpacked\coco.exe"
   exit /b 0

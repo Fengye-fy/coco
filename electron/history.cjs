@@ -8,8 +8,8 @@ class HistoryStore {
     catch (error) { if (error.code !== 'ENOENT') console.warn('History could not be loaded:', error.message); }
     if (!Array.isArray(this.items)) this.items = [];
     // A process interruption must not leave a task looking permanently active.
-    this.items = this.items.map(task => ['running', 'paused', 'stopping'].includes(task.status)
-      ? { ...task, status: 'interrupted', finishedAt: new Date().toISOString(), error: '客户端上次退出时任务尚未完成。' } : task);
+    this.items = this.items.map(task => ['running', 'paused', 'waiting_input', 'stopping'].includes(task.status)
+      ? { ...task, status: 'interrupted', activity: undefined, finishedAt: new Date().toISOString(), error: '客户端上次退出时任务尚未完成。' } : task);
     return this.list();
   }
   list() { return structuredClone(this.items); }

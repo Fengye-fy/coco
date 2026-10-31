@@ -6,6 +6,8 @@ const DEFAULTS = {
   model: 'gpt-6-astra',
   maxSteps: 60,
   requestTimeout: 120,
+  observationInterval: 60,
+  reconnectAttempts: 6,
 };
 
 function normalizeBaseUrl(value) {
@@ -22,10 +24,14 @@ function normalizeBaseUrl(value) {
 function validateSettings(input) {
   const maxSteps = Number(input.maxSteps);
   const requestTimeout = Number(input.requestTimeout);
+  const observationInterval = Number(input.observationInterval ?? DEFAULTS.observationInterval);
+  const reconnectAttempts = Number(input.reconnectAttempts ?? DEFAULTS.reconnectAttempts);
   if (!String(input.model || '').trim()) throw new Error('请填写模型名称。');
   if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 500) throw new Error('最大轮次应为 1–500 的整数。');
   if (!Number.isInteger(requestTimeout) || requestTimeout < 10 || requestTimeout > 600) throw new Error('请求超时应为 10–600 秒。');
-  return { baseUrl: normalizeBaseUrl(input.baseUrl), model: input.model.trim(), maxSteps, requestTimeout };
+  if (!Number.isInteger(observationInterval) || observationInterval < 10 || observationInterval > 3600) throw new Error('长等待观察间隔应为 10–3600 秒的整数。');
+  if (!Number.isInteger(reconnectAttempts) || reconnectAttempts < 0 || reconnectAttempts > 20) throw new Error('自动重连次数应为 0–20 的整数。');
+  return { baseUrl: normalizeBaseUrl(input.baseUrl), model: input.model.trim(), maxSteps, requestTimeout, observationInterval, reconnectAttempts };
 }
 
 class ConfigStore {

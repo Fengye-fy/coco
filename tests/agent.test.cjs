@@ -1,6 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { AgentEngine, trimImages } = require('../electron/agent.cjs');
+const { AgentEngine, trimImages, validatePlan } = require('../electron/agent.cjs');
+const { ModelRequestError } = require('../electron/provider.cjs');
 
 const settings = { apiKey: 'test-secret', model: 'test-model', maxSteps: 6 };
 const message = text => ({ output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] });
@@ -188,4 +189,145 @@ test('keeps recent screenshots without mutating past context', () => {
   assert.equal(trimmed.flatMap(item => item.content).filter(item => item.type === 'input_image').length, 2);
   assert.equal(trimmed.at(-1).content[0].image_url, 'frame-5');
   assert.equal(input[0].content[0].type, 'input_image');
+});
+
+test('plans before operating and persists verified step updates', async () => {
+  let turn = 0;
+  const { engine, saved, executions } = setup(async (_settings, input, options) => {
+    if (turn++ === 0) {
+      assert.equal(options.toolChoice.name, 'update_plan');
+      return call('update_plan', { steps: [{ title: '打开视频', status: 'in_progress' }, { title: '等待并验证播放结束', status: 'pending' }], explanation: '先打开，再按间隔观察' });
+    }
+    if (turn === 2) return call('look', { tile: 'A' });
+    if (turn === 3) return call('update_plan', { steps: [{ title: '打开视频', status: 'completed' }, { title: '等待并验证播放结束', status: 'in_progress' }], explanation: '视频已显示' });
+    assert.ok(input.some(item => item.type === 'function_call_output' && item.output.includes('Plan updated')));
+    return message('正在等待，尚未完成。');
+  });
+  await engine.send('打开视频'); await engine.runningPromise;
+  assert.equal(executions.length, 1);
+  assert.equal(saved.at(-1).plan[0].status, 'completed');
+  assert.equal(saved.at(-1).plan[1].status, 'in_progress', 'finishing a reply never invents verified plan completion');
+});
+
+test('long wait makes no model requests or screenshots until the default minute expires', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  let requests = 0;
+  const { engine, executions } = setup(async () => ++requests === 1 ? call('wait', { tile: 'A', reason: '视频播放中' }) : message('已观察'));
+  await engine.send('等视频');
+  await until(() => Boolean(engine.task.activity?.until));
+  assert.equal(engine.task.activity.seconds, 60);
+  t.mock.timers.tick(59999); await tick();
+  assert.equal(requests, 1); assert.equal(executions.length, 0);
+  t.mock.timers.tick(1); await engine.runningPromise;
+  assert.equal(executions.length, 1);
+  assert.equal(executions[0][0], 'look');
+  assert.deepEqual(executions[0][1], { tile: 'A' });
+  assert.equal(requests, 2);
+  assert.equal(engine.task.activity, undefined);
+});
+
+test('pausing a long wait freezes remaining time and stops prevent observation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  let requests = 0;
+  const { engine, executions } = setup(async () => ++requests === 1 ? call('wait', { tile: 'A', seconds: 60 }) : message('done'));
+  await engine.send('wait');
+  await until(() => Boolean(engine.task.activity?.until));
+  t.mock.timers.tick(20000);
+  engine.pause(); await tick();
+  t.mock.timers.tick(120000); await tick();
+  assert.equal(executions.length, 0); assert.equal(requests, 1);
+  engine.resume(); await tick();
+  t.mock.timers.tick(39999); await tick();
+  assert.equal(executions.length, 0);
+  engine.stop(); await engine.runningPromise;
+  t.mock.timers.tick(60000);
+  assert.equal(executions.length, 0);
+  assert.equal(engine.task.status, 'stopped');
+});
+
+test('retries only the interrupted model request, retaining outputs and not repeating input actions', async () => {
+  let requests = 0;
+  const delays = [];
+  const { engine, executions } = setup(async (_settings, input) => {
+    requests++;
+    if (requests === 1) return call('act', { tile: 'A', action: 'click', x: 500, y: 500 });
+    assert.ok(input.some(item => item.type === 'function_call_output' && item.output === 'done'));
+    if (requests < 4) throw new ModelRequestError('temporary test-secret', { retryable: true });
+    return message('恢复成功');
+  });
+  engine.sleep = async ms => { delays.push(ms); };
+  await engine.send('test'); await engine.runningPromise;
+  assert.deepEqual(delays, [2000, 4000]);
+  assert.equal(executions.length, 1);
+  assert.equal(engine.task.steps, 2, 'retries do not consume model rounds');
+  assert.equal(engine.task.status, 'completed');
+  assert.ok(!JSON.stringify(engine.task).includes('test-secret'));
+});
+
+test('exhausted reconnects pause with original plan and resume the same task', async () => {
+  let requests = 0;
+  const { engine, saved } = setup(async () => {
+    requests++;
+    if (requests === 1) return call('update_plan', { steps: [{ title: '等待视频', status: 'in_progress' }], explanation: '' });
+    if (requests < 4) throw new ModelRequestError('offline', { retryable: true });
+    return message('恢复完成');
+  }, { reconnectAttempts: 1 });
+  engine.sleep = async () => {};
+  await engine.send('test');
+  const id = engine.task.id;
+  await until(() => engine.task.status === 'paused' && saved.at(-1)?.status === 'paused');
+  assert.equal(engine.task.activity.exhausted, true);
+  assert.equal(engine.task.plan[0].title, '等待视频');
+  assert.equal(engine.active(), true);
+  engine.resume();
+  assert.equal(engine.task.activity.exhausted, false);
+  assert.equal(engine.task.activity.title, '正在重新连接');
+  await engine.runningPromise;
+  assert.equal(engine.task.id, id);
+  assert.equal(engine.task.status, 'completed');
+});
+
+test('stop cancels a reconnect backoff immediately', async () => {
+  const { engine } = setup(async () => { throw new ModelRequestError('offline', { retryable: true, retryAfterMs: 60000 }); });
+  await engine.send('test');
+  await until(() => Boolean(engine.task.activity?.until));
+  engine.stop(); await engine.runningPromise;
+  assert.equal(engine.task.status, 'stopped');
+  assert.equal(engine.task.activity, undefined);
+});
+
+test('credential failures do not retry and reconnect can be disabled', async () => {
+  for (const options of [{ error: new ModelRequestError('bad key', { status: 401 }), settings: {} }, { error: new ModelRequestError('offline', { retryable: true }), settings: { reconnectAttempts: 0 } }]) {
+    let requests = 0;
+    const { engine } = setup(async () => { requests++; throw options.error; }, options.settings);
+    await engine.send('test'); await engine.runningPromise;
+    assert.equal(requests, 1);
+    assert.equal(engine.task.status, 'failed');
+  }
+});
+
+test('a recovered connection requests a fresh look and honors server retry delay', async () => {
+  let requests = 0;
+  const delays = [];
+  const { engine, executions } = setup(async (_settings, input, options) => {
+    requests++;
+    if (requests === 1) return call('update_plan', { steps: [{ title: '检查画面', status: 'in_progress' }], explanation: '' });
+    if (requests === 2) throw new ModelRequestError('busy', { retryable: true, retryAfterMs: 90000 });
+    if (requests === 3) {
+      assert.equal(options.toolChoice.name, 'look');
+      return call('look', { tile: 'A' });
+    }
+    assert.ok(input.some(item => item.type === 'function_call_output' && item.output === 'done'));
+    return message('恢复后已重新观察');
+  });
+  engine.tools.schemas = () => [{ type: 'function', name: 'look' }];
+  engine.sleep = async ms => delays.push(ms);
+  await engine.send('test'); await engine.runningPromise;
+  assert.deepEqual(delays, [90000]);
+  assert.deepEqual(executions.map(item => item[0]), ['look']);
+  assert.equal(engine.task.status, 'completed');
+});
+
+test('plan validation rejects empty or conflicting steps', () => {
+  for (const steps of [[], [{ title: '', status: 'pending' }], [{ title: 'a', status: 'unknown' }], [{ title: 'a', status: 'in_progress' }, { title: 'b', status: 'in_progress' }]]) assert.throws(() => validatePlan({ steps }));
 });

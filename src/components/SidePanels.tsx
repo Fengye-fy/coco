@@ -45,6 +45,11 @@ export function SettingsPanel({ settings, busy, onSave, onBack, notify }: { sett
         <label className="field"><span>每个任务最多轮次</span><input type="number" min={1} max={500} value={form.maxSteps} disabled={locked} onChange={e => update('maxSteps', Number(e.target.value))} /></label>
         <label className="field"><span>请求超时（秒）</span><input type="number" min={10} max={600} value={form.requestTimeout} disabled={locked} onChange={e => update('requestTimeout', Number(e.target.value))} /></label>
       </div>
+      <div className="row2">
+        <label className="field"><span>长等待观察间隔（秒）</span><input type="number" min={10} max={3600} value={form.observationInterval} disabled={locked} onChange={e => update('observationInterval', Number(e.target.value))} /></label>
+        <label className="field"><span>自动重连次数</span><input type="number" min={0} max={20} value={form.reconnectAttempts} disabled={locked} onChange={e => update('reconnectAttempts', Number(e.target.value))} /></label>
+      </div>
+      <p className="hint">长等待默认每 60 秒截图检查一次，间隔内不调用模型。断联后逐步延长间隔重试；多次失败会保留进度并暂停，点击“继续”重试。设为 0 可关闭自动重连。</p>
       <div className="actions">
         <button className="ghost" disabled={locked} onClick={() => test(false)}>{testing === 'text' ? <LoaderCircle size={13} className="spin" /> : <Zap size={13} />}测试连接</button>
         <button className="ghost" disabled={locked} onClick={() => test(true)}>{testing === 'vision' ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}测试视觉</button>
@@ -79,7 +84,7 @@ export function HistoryPanel({ onBack, notify }: { onBack(): void; notify(messag
       {filtered.map(task => <div key={task.id} className={`h-item${open?.id === task.id ? ' open' : ''}`}>
         <button className="h-head" onClick={() => toggle(task.id)}>
           <strong>{task.prompt}</strong>
-          <small>{task.workspace} · {date(task.createdAt)} · <span className={`state ${task.status}`}>{statusText[task.status]}</span></small>
+          <small>{task.workspace}{task.agentName ? ` · ${task.agentName}` : ''} · {date(task.createdAt)} · <span className={`state ${task.status}`}>{statusText[task.status]}</span></small>
         </button>
         {open?.id === task.id && <div className="h-detail feed"><TaskView task={open} /></div>}
       </div>)}

@@ -20,8 +20,8 @@ function thumb(dataUrl) {
   const small = image.getSize().width > 480 ? image.resize({ width: 480, quality: 'good' }) : image;
   return `data:image/jpeg;base64,${small.toJPEG(70).toString('base64')}`;
 }
-function engines() { return [...(manager?.workspaces.values() || [])].map(ws => ws.engine); }
-function engine(wsId) { return manager.get(wsId).engine; }
+function engines() { return [...(manager?.workspaces.values() || [])].flatMap(ws => [...ws.agents.values()].map(agent => agent.engine)); }
+function engine(wsId, agentId) { return manager.agent(wsId, agentId).engine; }
 function trusted(event) { return win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame; }
 
 function handle(channel, handler) {
@@ -50,13 +50,13 @@ async function bootstrap() {
   });
   manager = new WorkspaceManager({
     win, emit, folders,
-    createEngine: ws => new AgentEngine({ config, history, tools: new WorkspaceTools(manager, ws.id), emit: event => emit({ ...event, wsId: ws.id }), thumb, workspace: ws }),
+    createEngine: (ws, agent) => new AgentEngine({ config, history, tools: new WorkspaceTools(manager, ws.id), emit: event => emit({ ...event, wsId: ws.id, agentId: agent.id }), thumb, workspace: ws, agent }),
   });
   manager.createWorkspace();
 
   handle('app:bootstrap', () => ({
     settings: config.public(), version: app.getVersion(), workspaces: manager.state(), activeId: manager.activeId,
-    sessions: Object.fromEntries([...manager.workspaces.values()].map(ws => [ws.id, structuredClone(ws.engine.tasks)])),
+    sessions: Object.fromEntries([...manager.workspaces.values()].flatMap(ws => [...ws.agents.values()].map(agent => [agent.id, structuredClone(agent.engine.tasks)]))),
   }));
   handle('settings:save', input => {
     if (engines().some(item => item.active())) throw new Error('请在 coco 停止工作后再修改设置。');
@@ -101,12 +101,18 @@ async function bootstrap() {
   handle('apps:list', async refresh => (await manager.apps(Boolean(refresh))).apps);
   handle('windows:list', () => manager.desktopWindows());
 
-  handle('agent:send', (wsId, text) => engine(wsId).send(text));
-  handle('agent:pause', wsId => engine(wsId).pause());
-  handle('agent:resume', wsId => engine(wsId).resume());
-  handle('agent:stop', wsId => engine(wsId).stop());
-  handle('agent:answer', (wsId, text) => engine(wsId).answer(text));
-  handle('agent:reset', wsId => engine(wsId).reset());
+  handle('agent:add', (wsId, hint) => manager.addAgent(wsId, hint || {}));
+  handle('agent:close', (wsId, agentId) => manager.closeAgent(wsId, agentId));
+  handle('agent:send', (wsId, text, agentId) => engine(wsId, agentId).send(text));
+  handle('agent:pause', (wsId, agentId) => engine(wsId, agentId).pause());
+  handle('agent:resume', (wsId, agentId) => engine(wsId, agentId).resume());
+  handle('agent:stop', (wsId, agentId) => engine(wsId, agentId).stop());
+  handle('agent:answer', (wsId, text, agentId) => engine(wsId, agentId).answer(text));
+  handle('agent:reset', (wsId, agentId) => {
+    const agent = manager.agent(wsId, agentId);
+    agent.engine.reset();
+    emit({ type: 'agent-reset', wsId, agentId: agent.id });
+  });
   handle('window:action', action => {
     if (action === 'minimize') win.minimize();
     else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize();
