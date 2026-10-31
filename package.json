@@ -1,0 +1,66 @@
+{
+  "name": "coco-agent",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "coco: a visual agent that works inside its own workspace of web pages, desktop apps and WSA apps",
+  "main": "electron/main.cjs",
+  "author": "coco",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && vite build",
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs tests/*.test.mjs",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:native": "node scripts/verify-native.mjs",
+    "test:dev": "node scripts/verify-dev.mjs",
+    "icon": "electron scripts/make-icon.cjs",
+    "dist:dir": "npm run build && electron-builder --win --dir --config.electronDist=node_modules/electron/dist --config.win.signExecutable=false",
+    "dist": "npm run build && electron-builder --win nsis",
+    "dist:portable": "npm run build && electron-builder --win portable"
+  },
+  "dependencies": {
+    "lucide-react": "^1.66.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0",
+    "playwright-core": "^1.64.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  },
+  "build": {
+    "appId": "com.coco.agent",
+    "productName": "coco",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "electron/native/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "coco-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}
