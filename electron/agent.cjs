@@ -22,6 +22,11 @@ const WAIT_TOOL = {
   parameters: { type: 'object', properties: { tile: { type: 'string' }, seconds: { type: 'integer', minimum: 10, maximum: 3600, description: 'Observation interval. Omit to use the user setting (normally 60 seconds).' }, reason: { type: 'string', maxLength: 300 } }, required: ['tile'], additionalProperties: false }, strict: false,
 };
 
+// Requests never pin tool_choice to one function: a model told it may only call `look` (and proxies that then
+// send only that tool) concludes it cannot read files or click at all. Ordering is enforced here instead.
+const RECONNECT_NOTE = 'The connection to the model dropped and has just been restored. The tiles may have changed meanwhile: call look first, then carry on with the task. All of your tools (folder, act, web and the rest) are still available.';
+const changesScreen = (name, args) => (name === 'act' && args.action !== 'wait') || (name === 'web' && args.action !== 'read');
+
 function validatePlan(args) {
   if (!Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > 12) throw new Error('计划需要 1–12 个步骤。');
   const steps = args.steps.map(step => {
@@ -107,6 +112,8 @@ class AgentEngine {
     if (!settings.apiKey) throw new Error('请先在设置中填写 API Key。');
     this.settings = settings;
     this.needsReobserve = false;
+    this.reconnected = false;
+    this.mustLook = false;
     this.controller = new AbortController();
     this.task = { id: randomUUID(), workspaceId: this.workspace.id, workspace: this.workspace.name, agentId: this.agent.id, agentName: this.agent.name, prompt: prompt.trim(), status: 'running', createdAt: new Date().toISOString(), model: settings.model, steps: 0, toolCalls: 0, plan: [], events: [], result: '', error: '' };
     this.tasks = [...this.tasks, this.task].slice(-30);
@@ -197,11 +204,11 @@ class AgentEngine {
       await this.gate();
       this.controller.signal.throwIfAborted();
       try {
-        // The screen may have changed while offline. Recover with observation before further input.
-        const canLook = reconnecting && options.tools.some(tool => tool.name === 'look');
-        const response = await this.request(settings, input, { ...options, ...(canLook ? { toolChoice: { type: 'function', name: 'look' } } : {}) });
+        // The screen may have changed while offline: say so, keep every tool, and require a look before input.
+        const response = await this.request(settings, reconnecting ? [...input, { role: 'user', content: RECONNECT_NOTE }] : input, options);
         if (reconnecting) {
           this.task.activity = undefined;
+          this.reconnected = true;
           this.log('system', '模型已重新连接', '保留原任务和工具执行记录，继续检查当前画面。');
         }
         return response;
@@ -259,8 +266,13 @@ class AgentEngine {
         this.task.steps = step + 1;
         this.log('thinking', '思考中', `第 ${step + 1} 轮`);
         const plannedRevision = this.pauseRevision;
-        const response = await this.requestWithRecovery(settings, trimImages([system, ...this.turns.flat()], KEEP_IMAGES), { tools: schemas, signal, ...(!this.task.plan.length ? { toolChoice: { type: 'function', name: 'update_plan' } } : {}) });
+        const response = await this.requestWithRecovery(settings, trimImages([system, ...this.turns.flat()], KEEP_IMAGES), { tools: schemas, signal });
         await this.gate();
+        if (this.reconnected) {
+          turn.push({ role: 'user', content: RECONNECT_NOTE });
+          this.reconnected = false;
+          this.mustLook = true;
+        }
         // Without stored responses, reasoning items can only be replayed when they carry encrypted content.
         const output = response.output.filter(item => item.type !== 'reasoning' || item.encrypted_content);
         turn.push(...output);
@@ -292,6 +304,11 @@ class AgentEngine {
             this.log('error', '工具参数格式错误', call.name);
             continue;
           }
+          if (this.mustLook && changesScreen(call.name, args)) {
+            turn.push({ type: 'function_call_output', call_id: call.call_id, output: 'Not executed: the connection was restored a moment ago and the screen may have changed. Call look first, then retry this action. Reading files and other tools work as usual.' });
+            this.log('system', '先观察再操作', '连接刚恢复，需要先看一眼当前画面再点击或输入。');
+            continue;
+          }
           this.task.toolCalls++;
           this.log('tool', call.name === 'wait' ? `等待观察 ${args.tile}` : call.name === 'update_plan' ? '更新任务计划' : this.tools.describe?.(call.name, args) || call.name, JSON.stringify(args, null, 2));
           try {
@@ -316,6 +333,7 @@ class AgentEngine {
               result = await this.tools.execute(call.name, args, signal);
             }
             if (signal.aborted) throw new Error('任务已停止。');
+            if (call.name === 'look' || call.name === 'wait') this.mustLook = false;
             const text = redact(result.text, settings.apiKey);
             const images = result.images || [];
             turn.push({ type: 'function_call_output', call_id: call.call_id, output: text });

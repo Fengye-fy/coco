@@ -73,7 +73,7 @@ try {
   await page.getByLabel('给 coco 的消息').press('Enter');
   await page.locator('.task-activity.waiting').waitFor();
   assert.equal(await page.locator('.task-plan li.in_progress').count(), 1);
-  assert.equal(requests[0].data.tool_choice.name, 'update_plan');
+  assert.equal(requests[0].data.tool_choice, undefined, 'planning never pins a single tool');
   assert.match(await page.locator('.task-activity time').innerText(), /^0:[0-5]\d|1:00$/);
   await page.screenshot({ path: path.join(directory, 'waiting.png') });
   const countWhileWaiting = requests.length;
@@ -86,7 +86,8 @@ try {
   assert.ok(requests[2].at - waitingAt >= 59000, 'a real minute passes before the observation request');
   const waitOutput = requests[2].data.input.find(item => item.type === 'function_call_output' && item.output.startsWith('Waited 60 active seconds'));
   assert.ok(waitOutput);
-  assert.equal(requests[3].data.tool_choice.name, 'look', 'recovery requests a fresh observation');
+  assert.equal(requests[3].data.tool_choice, undefined, 'every tool stays available after reconnecting');
+  assert.match(requests[3].data.input.at(-1).content, /just been restored/, 'recovery asks for a fresh look');
   assert.equal(requests.length, 6);
   assert.equal(await page.locator('.task-plan li.completed').count(), 1);
   assert.equal(await page.locator('.task-activity').count(), 0);

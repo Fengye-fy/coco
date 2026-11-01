@@ -195,7 +195,7 @@ test('plans before operating and persists verified step updates', async () => {
   let turn = 0;
   const { engine, saved, executions } = setup(async (_settings, input, options) => {
     if (turn++ === 0) {
-      assert.equal(options.toolChoice.name, 'update_plan');
+      assert.equal(options.toolChoice, undefined, 'planning is asked for in the prompt, never by pinning one tool');
       return call('update_plan', { steps: [{ title: '打开视频', status: 'in_progress' }, { title: '等待并验证播放结束', status: 'pending' }], explanation: '先打开，再按间隔观察' });
     }
     if (turn === 2) return call('look', { tile: 'A' });
@@ -314,7 +314,8 @@ test('a recovered connection requests a fresh look and honors server retry delay
     if (requests === 1) return call('update_plan', { steps: [{ title: '检查画面', status: 'in_progress' }], explanation: '' });
     if (requests === 2) throw new ModelRequestError('busy', { retryable: true, retryAfterMs: 90000 });
     if (requests === 3) {
-      assert.equal(options.toolChoice.name, 'look');
+      assert.equal(options.toolChoice, undefined, 'every tool stays available after reconnecting');
+      assert.match(input.at(-1).content, /connection to the model dropped and has just been restored/);
       return call('look', { tile: 'A' });
     }
     assert.ok(input.some(item => item.type === 'function_call_output' && item.output === 'done'));
@@ -330,4 +331,31 @@ test('a recovered connection requests a fresh look and honors server retry delay
 
 test('plan validation rejects empty or conflicting steps', () => {
   for (const steps of [[], [{ title: '', status: 'pending' }], [{ title: 'a', status: 'unknown' }], [{ title: 'a', status: 'in_progress' }, { title: 'b', status: 'in_progress' }]]) assert.throws(() => validatePlan({ steps }));
+});
+
+test('after reconnecting, files stay readable and screen input waits for a fresh look', async () => {
+  let requests = 0;
+  const seen = [];
+  const { engine, executions } = setup(async (_settings, input, options) => {
+    requests++;
+    seen.push(options.tools.map(tool => tool.name));
+    if (requests === 1) throw new ModelRequestError('offline', { retryable: true });
+    if (requests === 2) return { output: [
+      { type: 'function_call', name: 'folder', call_id: 'read', arguments: JSON.stringify({ action: 'read', path: '手册.md' }) },
+      { type: 'function_call', name: 'act', call_id: 'early', arguments: JSON.stringify({ tile: 'A', action: 'click', x: 1, y: 1 }) },
+    ] };
+    if (requests === 3) {
+      assert.ok(input.some(item => item.type === 'function_call_output' && item.call_id === 'early' && item.output.startsWith('Not executed')));
+      assert.equal(input.filter(item => item.role === 'user' && typeof item.content === 'string' && item.content.includes('just been restored')).length, 1, 'the note stays in history once');
+      return call('look', { tile: 'A' }, 'look');
+    }
+    if (requests === 4) return call('act', { tile: 'A', action: 'click', x: 1, y: 1 }, 'later');
+    return message('完成');
+  });
+  engine.tools.schemas = () => ['tiles', 'look', 'act', 'web', 'folder'].map(name => ({ type: 'function', name }));
+  engine.sleep = async () => {};
+  await engine.send('按手册作答'); await engine.runningPromise;
+  assert.deepEqual(executions.map(item => item[0]), ['folder', 'look', 'act']);
+  assert.ok(seen.every(names => names.includes('folder') && names.includes('act')), 'no request ever hides tools');
+  assert.equal(engine.task.status, 'completed');
 });

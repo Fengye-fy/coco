@@ -21,7 +21,9 @@ const server = http.createServer(async (req, res) => {
     const data = JSON.parse(raw); requests.push(data);
     const user = data.input.filter(item => item.role === 'user' && typeof item.content === 'string').at(-1)?.content || '';
     const label = user.includes('B_SECRET') ? 'B' : 'A';
-    if (data.tool_choice?.name === 'update_plan') respond(res, tool('update_plan', { steps: [{ title: `计划 ${label}`, status: 'in_progress' }], explanation: '本地验证' }));
+    const latest = data.input.findLastIndex(item => item.role === 'user' && typeof item.content === 'string');
+    const planned = data.input.slice(latest + 1).some(item => item.type === 'function_call');
+    if (!planned) respond(res, tool('update_plan', { steps: [{ title: `计划 ${label}`, status: 'in_progress' }], explanation: '本地验证' }));
     else if (user.includes('HOLD')) held.set(label, res);
     else respond(res, message(`独立回复 ${label}`));
   } catch (error) { errors.push(error.message); res.writeHead(500); res.end('{}'); }
